@@ -1,6 +1,11 @@
 #include "control.h"
 
-Control::Control(QObject *parent): QObject(parent)
+#include <QTimer>
+
+Control::Control(QObject *parent):
+    QObject(parent),
+    m_active(false),
+    m_service()
 {
 }
 
@@ -15,13 +20,9 @@ void Control::classBegin()
 
 void Control::componentComplete()
 {
-    QDBusConnection::sessionBus().connect("", MPRIS2_PATH, FREEDESKTOP_PROPERTIES_IF, "PropertiesChanged", this, SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
-
-    mprisIface = new QDBusInterface(m_service, MPRIS2_PATH, MPRIS2_MEDIAPLAYER_IF, QDBusConnection::sessionBus(), this);
-    playerIface = new QDBusInterface(m_service, MPRIS2_PATH, MPRIS2_MEDIAPLAYER_PLAYER_IF, QDBusConnection::sessionBus(), this);
-    propertiesIface = new QDBusInterface(m_service, MPRIS2_PATH, FREEDESKTOP_PROPERTIES_IF, QDBusConnection::sessionBus(), this);
-
-    initialize();
+    if (m_active && m_service != "") {
+        initialize();
+    }
 }
 
 void Control::initialize()
@@ -30,56 +31,90 @@ void Control::initialize()
     emitProperties();
     getAllPropertiesPlayer();
     emitPropertiesPlayer();
+
+    schedulePing();
 }
 
 void Control::quit()
 {
-    mprisIface->call("Quit");
+    if (mprisIface)
+        mprisIface->call("Quit");
 }
 
 void Control::raise()
 {
-    mprisIface->call("Raise");
+    if (mprisIface)
+        mprisIface->call("Raise");
 }
 
 void Control::next()
 {
-    playerIface->call("Next");
+    if (playerIface)
+        playerIface->call("Next");
 }
 
 void Control::openUri(const QString &uri)
 {
-    playerIface->call("OpenUri", uri);
+    if (playerIface)
+        playerIface->call("OpenUri", uri);
 }
 
 void Control::pause()
 {
-    playerIface->call("Pause");
+    if (playerIface)
+        playerIface->call("Pause");
 }
 
 void Control::play()
 {
-    playerIface->call("Play");
+    if (playerIface)
+        playerIface->call("Play");
 }
 
 void Control::playPause()
 {
-    playerIface->call("PlayPause");
+    if (playerIface)
+        playerIface->call("PlayPause");
 }
 
 void Control::previous()
 {
-    playerIface->call("Previous");
+    if (playerIface)
+        playerIface->call("Previous");
 }
 
 void Control::seek(qlonglong offset)
 {
-    playerIface->call("Seek", offset);
+    if (playerIface)
+        playerIface->call("Seek", offset);
 }
 
 void Control::stop()
 {
-    playerIface->call("Stop");
+    if (playerIface)
+        playerIface->call("Stop");
+}
+
+bool Control::active() const
+{
+    return m_active;
+}
+
+void Control::setActive(bool newActive)
+{
+    if (m_active != newActive) {
+        m_active = newActive;
+
+        if (!m_active) {
+            disconnectSignals();
+        }
+        else if (m_service != "") {
+            connectSignals();
+            initialize();
+        }
+
+        Q_EMIT activeChanged();
+    }
 }
 
 QString Control::service() const
@@ -89,9 +124,26 @@ QString Control::service() const
 
 void Control::setService(const QString &newService)
 {
-    m_service = newService;
+    if (m_service != newService) {
+        m_service = newService;
 
-    Q_EMIT serviceChanged();
+        if (m_service != "") {
+            mprisIface.reset(new QDBusInterface(m_service, MPRIS2_PATH, MPRIS2_MEDIAPLAYER_IF, QDBusConnection::sessionBus(), this));
+            playerIface.reset(new QDBusInterface(m_service, MPRIS2_PATH, MPRIS2_MEDIAPLAYER_PLAYER_IF, QDBusConnection::sessionBus(), this));
+            propertiesIface.reset(new QDBusInterface(m_service, MPRIS2_PATH, FREEDESKTOP_PROPERTIES_IF, QDBusConnection::sessionBus(), this));
+            peerIface.reset(new QDBusInterface(m_service, MPRIS2_PATH, FREEDESKTOP_PEER_IF, QDBusConnection::sessionBus(), this));
+
+            if (m_active) {
+                connectSignals();
+                initialize();
+            }
+        }
+        else if (m_active) {
+            disconnectSignals();
+        }
+
+        Q_EMIT serviceChanged();
+    }
 }
 
 bool Control::canQuit() const
@@ -302,20 +354,39 @@ void Control::emitPropertiesPlayer()
     Q_EMIT volumeChanged();
 }
 
+void Control::connectSignals()
+{
+    QDBusConnection::sessionBus().connect(m_service, MPRIS2_PATH, FREEDESKTOP_PROPERTIES_IF, "PropertiesChanged", this, SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
+}
+
+void Control::disconnectSignals()
+{
+    QDBusConnection::sessionBus().disconnect(m_service, MPRIS2_PATH, FREEDESKTOP_PROPERTIES_IF, "PropertiesChanged", this, SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
+}
+
+void Control::schedulePing()
+{
+    QTimer::singleShot(1000, this, SLOT(sendPing()));
+}
+
 void Control::setDBusProperty(const QString &interface, const QString &name, const QVariant &value)
 {
-    propertiesIface->call("Set", interface, name, value);
+    if (propertiesIface)
+        propertiesIface->call("Set", interface, name, value);
 }
 
 QVariantMap Control::getAllDBusProperties(const QString &interface)
 {
-    QDBusReply<QVariantMap> reply = propertiesIface->call("GetAll", interface);
-    if (reply.isValid()) {
-        return reply.value();
+    if (propertiesIface) {
+        QDBusReply<QVariantMap> reply = propertiesIface->call("GetAll", interface);
+        if (reply.isValid()) {
+            return reply.value();
+        }
+        else {
+            return QVariantMap();
+        }
     }
-    else {
-        return QVariantMap();
-    }
+    return QVariantMap();
 }
 
 void Control::onPropertiesChanged(const QString &interface, const QVariantMap &propertiesChanged, const QStringList &propertiesInvalidated)
@@ -353,6 +424,23 @@ void Control::onPropertiesChanged(const QString &interface, const QVariantMap &p
     }
     else if (interface == MPRIS2_MEDIAPLAYER_PLAYER_IF) {
         emitPropertiesPlayer();
+    }
+}
+
+void Control::sendPing()
+{
+    if (peerIface && m_active && m_service != "") {
+        QDBusMessage reply = peerIface->call("Ping");
+        if (reply.type() == QDBusMessage::ErrorMessage) {
+            setActive(false);
+            m_properties.clear();
+            emitProperties();
+            m_properties_player.clear();
+            emitPropertiesPlayer();
+        }
+        else {
+            schedulePing();
+        }
     }
 }
 

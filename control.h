@@ -1,4 +1,4 @@
-﻿#ifndef CONTROL_H
+#ifndef CONTROL_H
 #define CONTROL_H
 
 #include <QObject>
@@ -11,6 +11,7 @@
 #define MPRIS2_MEDIAPLAYER_IF           "org.mpris.MediaPlayer2"
 #define MPRIS2_MEDIAPLAYER_PLAYER_IF    "org.mpris.MediaPlayer2.Player"
 #define FREEDESKTOP_PROPERTIES_IF       "org.freedesktop.DBus.Properties"
+#define FREEDESKTOP_PEER_IF             "org.freedesktop.DBus.Peer"
 
 class Control : public QObject, public QQmlParserStatus
 {
@@ -18,6 +19,8 @@ class Control : public QObject, public QQmlParserStatus
     Q_INTERFACES(QQmlParserStatus)
 
 public:
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+
     Q_PROPERTY(QString service READ service WRITE setService NOTIFY serviceChanged)
 
     Q_PROPERTY(bool canQuit READ canQuit NOTIFY canQuitChanged)
@@ -65,6 +68,9 @@ public:
     //method void org.mpris.MediaPlayer2.Player.SetPosition(QDBusObjectPath TrackId, qlonglong Position) //NOT IMPLEMENTED
     Q_INVOKABLE void stop();
 
+    bool active() const;
+    void setActive(bool newActive);
+
     QString service() const;
     void setService(const QString &newService);
 
@@ -99,6 +105,8 @@ public:
     void setVolume(double newVolume);
 
 signals:
+    void activeChanged();
+
     void serviceChanged();
 
     void canQuitChanged();
@@ -137,9 +145,17 @@ private:
     void emitProperties();
     void emitPropertiesPlayer();
 
-    QDBusInterface *mprisIface;
-    QDBusInterface *playerIface;
-    QDBusInterface *propertiesIface;
+    void connectSignals();
+    void disconnectSignals();
+
+    void schedulePing();
+
+    QScopedPointer<QDBusInterface> mprisIface;
+    QScopedPointer<QDBusInterface> playerIface;
+    QScopedPointer<QDBusInterface> propertiesIface;
+    QScopedPointer<QDBusInterface> peerIface;
+
+    bool m_active;
 
     QString m_service;
 
@@ -148,6 +164,7 @@ private:
 
 private slots:
     void onPropertiesChanged(const QString &interface, const QVariantMap &propertiesChanged, const QStringList &propertiesInvalidated);
+    void sendPing();
 };
 
 #endif // CONTROL_H
